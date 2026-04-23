@@ -1,48 +1,57 @@
 import { GoogleGenAI } from "@google/genai";
 
-const SYSTEM_INSTRUCTION = `Act as "ELX," the core AI engine for the ELX Android application. Your behavior must strictly adhere to the following UI/UX and functional requirements.
+const SYSTEM_INSTRUCTION = `Act as "ELX," the core engine. You are bridging the connectivity gap between the user and advanced electronics analysis.
 
-### I. IDENTITY & BRANDING (FIXED COLOR):
-- **Name:** Your name is "ELX".
-- **Header Identity:** The app header MUST display "ELX" in a glowing Neon Green (#39FF14) color, matching the circuit-themed logo. Do not use Red or any other color.
+### I. ACTIVATION STATUS:
+- **If Key is missing:** Your ONLY response should be: "⚠️ ELX CORE INACTIVE. Please go to Settings [⚙️] and paste your API Key to establish connection."
+- **If Key is present:** Automatically initialize the ELX personality and enable all features (Multimodal, Electronics Analysis, TTS).
 
-### II. INTERFACE & NAVIGATION LOGIC:
-- **Left Sidebar (Account & History):** The 3-dot menu on the left handles user identity. It must contain:
-    1. Google Login/Logout options.
-    2. [🕒] History View: Positioned within this menu list (not in the header). Use a clean "Clock with Arrow" icon to represent history, avoiding any "white ball" or ambiguous shapes.
-- **Right Sidebar (Tools & Display):** The 3-dot menu on the right handles session controls:
-    1. [🔊] Text-to-Speech (TTS).
-    2. [📋] Bulk Copy.
-    3. [♻️] Refresh (Clear Cache).
-    4. [🌗] Theme Toggle: Options for "Dark Mode" and "White Mode" for eye comfort.
+### II. BRANDING & THEME:
+- **Header:** "ELX" in Glowing Neon Green (#39FF14).
+- **Icons:** 
+    - [🕒] History (inside Left Sidebar).
+    - [📋] Copy (Double frame icon).
+    - [🔊] TTS (Clean speaker icon).
+    - [🌗] Mode Toggle (Dark/White).
 
-### III. ICONOGRAPHY & SYMBOLS (CLEAN DESIGN):
-- **Copy Icon [📋]:** Ensure the copy symbol is represented as two overlapping rectangular outlines (rings/frames), making it universally recognizable as a "Copy" button. Avoid solid white blocks.
-- **Input Box:** Keep it clean with the hint "Enter technical query or command..." and a neon green lightning bolt for sending.
+### III. SPEECH (TTS) & ANALYSIS:
+- **TTS:** Clean text only for Android Native engine. No markdown symbols (*, #).
+- **Analysis:** Provide high-precision feedback for microcontrollers (like ESP32) only after activation.
 
-### IV. NATIVE SPEECH (TTS) & PERFORMANCE:
-- **Audio Logic:** Optimize text for the Android Native TTS engine. Use plain text only.
-- **Anti-Looping:** Deliver responses in a single, structured block to prevent repetitive speech patterns.
-- **Constraint:** Strictly avoid asterisks (*), hashtags (#), or complex markdown that the TTS might read aloud.
-
-### V. FUNCTIONAL PROTOCOLS:
-- **Multimodal:** Analyze images (circuits, hardware) and files from the [+] icon accurately.
-- **Privacy:** Respect the "Auto-Delete Timer" for session data.
-- **Efficiency:** Prioritize concise, high-signal technical answers to minimize mobile battery and data usage.`;
+### IV. PERFORMANCE:
+- Maintain a stable, lightweight heartbeat. If connection fails, notify the user to verify their key and internet status.`;
 
 export interface Message {
+  id: string;
   role: "user" | "model";
   parts: { text?: string; inlineData?: { mimeType: string; data: string } }[];
 }
 
 export class GeminiService {
-  private ai: GoogleGenAI;
+  private ai: GoogleGenAI | null = null;
+  private currentApiKey: string | null = null;
 
   constructor() {
-    this.ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+    const envKey = process.env.GEMINI_API_KEY;
+    if (envKey) {
+      this.updateApiKey(envKey);
+    }
+  }
+
+  updateApiKey(key: string) {
+    this.currentApiKey = key;
+    this.ai = new GoogleGenAI({ apiKey: key });
+  }
+
+  hasKey() {
+    return !!this.currentApiKey;
   }
 
   async chat(history: Message[], message: string, image?: { mimeType: string; data: string }) {
+    if (!this.ai) {
+      throw new Error("Please enter your API Key in the ELX Settings to activate my core.");
+    }
+
     const parts: any[] = [{ text: message }];
     if (image) {
       parts.push({ inlineData: image });
@@ -51,7 +60,14 @@ export class GeminiService {
     const response = await this.ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: [
-        ...history,
+        ...history.map(m => ({
+          role: m.role,
+          parts: m.parts.map(p => {
+            if (p.text) return { text: p.text };
+            if (p.inlineData) return { inlineData: p.inlineData };
+            return {};
+          })
+        })),
         { role: "user", parts }
       ],
       config: {

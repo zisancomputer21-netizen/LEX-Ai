@@ -13,7 +13,10 @@ import {
   ClipboardCopy,
   Sun,
   Moon,
-  Clock
+  Clock,
+  Settings as SettingsIcon,
+  CheckCircle2,
+  AlertCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { geminiService, Message } from './services/gemini.ts';
@@ -25,9 +28,26 @@ export default function App() {
   const [selectedImage, setSelectedImage] = useState<{ url: string; data: string; mimeType: string } | null>(null);
   const [isLeftMenuOpen, setIsLeftMenuOpen] = useState(false);
   const [isRightMenuOpen, setIsRightMenuOpen] = useState(false);
+  const [isApiSettingsOpen, setIsApiSettingsOpen] = useState(false);
+  const [tempApiKey, setTempApiKey] = useState('');
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [hasApiKey, setHasApiKey] = useState(geminiService.hasKey());
+
+  const handleUpdateApiKey = () => {
+    if (tempApiKey.trim()) {
+      geminiService.updateApiKey(tempApiKey.trim());
+      setHasApiKey(true);
+      setIsApiSettingsOpen(false);
+      setMessages(prev => [...prev, { 
+        id: crypto.randomUUID(),
+        role: 'model', 
+        parts: [{ text: "ELX CORE ACTIVATED. CONNECTION REFRESHED. READY FOR TECHNICAL QUERIES." }] 
+      }]);
+    }
+  };
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -62,6 +82,7 @@ export default function App() {
     const currentImage = selectedImage;
     
     const userMessage: Message = {
+      id: crypto.randomUUID(),
       role: 'user',
       parts: [
         { text: currentInput },
@@ -69,12 +90,25 @@ export default function App() {
       ]
     };
 
-    setMessages(prev => [...prev, userMessage]);
-    setInputText('');
-    setSelectedImage(null);
-    setIsTyping(true);
-
     try {
+      if (!hasApiKey) {
+        const inactiveMessage: Message = {
+          id: crypto.randomUUID(),
+          role: 'model',
+          parts: [{ text: "⚠️ ELX CORE INACTIVE. Please go to Settings [⚙️] and paste your API Key to establish connection." }]
+        };
+        setMessages(prev => [...prev, userMessage, inactiveMessage]);
+        setInputText('');
+        setSelectedImage(null);
+        setIsTyping(false);
+        return;
+      }
+
+      setMessages(prev => [...prev, userMessage]);
+      setInputText('');
+      setSelectedImage(null);
+      setIsTyping(true);
+      
       const response = await geminiService.chat(
         messages, 
         currentInput, 
@@ -82,6 +116,7 @@ export default function App() {
       );
       
       const modelMessage: Message = {
+        id: crypto.randomUUID(),
         role: 'model',
         parts: [{ text: response }]
       };
@@ -89,6 +124,7 @@ export default function App() {
     } catch (error) {
       console.error('ELX Error:', error);
       const errorMessage: Message = {
+        id: crypto.randomUUID(),
         role: 'model',
         parts: [{ text: 'System Error: Connectivity to ELX Core lost.' }]
       };
@@ -172,28 +208,32 @@ export default function App() {
             <h2 className="text-[10px] font-mono uppercase tracking-[0.2em] text-gray-500 mb-6 px-1 font-bold">Session Controls</h2>
             <div className="space-y-3">
               <button className={`w-full flex items-center gap-3 p-2 rounded transition-all text-sm font-medium ${isLight ? 'hover:bg-[#E9ECEF] text-gray-700' : 'hover:bg-[#2D3036] text-gray-400 hover:text-white'}`}>
-                <Volume2 className="h-4 w-4" /> Text-to-Speech (TTS)
+                <ClipboardCopy className="h-4 w-4" /> [📋] Bulk Copy Content
               </button>
               <button className={`w-full flex items-center gap-3 p-2 rounded transition-all text-sm font-medium ${isLight ? 'hover:bg-[#E9ECEF] text-gray-700' : 'hover:bg-[#2D3036] text-gray-400 hover:text-white'}`}>
-                <ClipboardCopy className="h-4 w-4" /> Bulk Copy Content
+                <Volume2 className="h-4 w-4" /> [🔊] Text-to-Speech (TTS)
+              </button>
+              <button 
+                onClick={() => { setIsRightMenuOpen(false); setIsApiSettingsOpen(true); }}
+                className={`w-full flex items-center gap-3 p-2 rounded transition-all text-sm font-medium ${isLight ? 'hover:bg-[#E9ECEF] text-gray-700' : 'hover:bg-[#2D3036] text-gray-400 hover:text-white'}`}
+              >
+                <SettingsIcon className="h-4 w-4" /> [⚙️] API Settings
+              </button>
+              <button 
+                onClick={toggleTheme}
+                className={`w-full flex items-center gap-3 p-2 rounded transition-all text-sm font-medium ${isLight ? 'hover:bg-[#E9ECEF] text-gray-700' : 'hover:bg-[#2D3036] text-gray-400 hover:text-white'}`}
+              >
+                {isLight ? (
+                  <><Moon className="h-4 w-4" /> [🌗] Active: White Mode</>
+                ) : (
+                  <><Sun className="h-4 w-4" /> [🌗] Active: Dark Mode</>
+                )}
               </button>
               <button 
                 onClick={clearCache}
                 className={`w-full flex items-center gap-3 p-2 rounded transition-all text-sm font-medium ${isLight ? 'hover:bg-[#E9ECEF] text-gray-700' : 'hover:bg-[#2D3036] text-gray-400 hover:text-white'}`}
               >
-                <RefreshCcw className="h-4 w-4" /> Clear Session Cache
-              </button>
-              
-              <div className="h-px bg-gray-200 my-4 opacity-20" />
-              
-              <button 
-                onClick={toggleTheme}
-                className={`w-full flex items-center gap-3 p-2 rounded transition-all text-sm font-medium ${isLight ? 'hover:bg-[#E9ECEF] text-gray-700' : 'hover:bg-[#2D3036] text-gray-400 hover:text-white'}`}>
-                {isLight ? (
-                  <><Moon className="h-4 w-4" /> Active: White Mode</>
-                ) : (
-                  <><Sun className="h-4 w-4" /> Active: Dark Mode</>
-                )}
+                <RefreshCcw className="h-4 w-4" /> [♻️] Clear Session Cache
               </button>
             </div>
             
@@ -206,14 +246,60 @@ export default function App() {
           </motion.div>
         )}
 
-        {(isLeftMenuOpen || isRightMenuOpen) && (
+        {(isLeftMenuOpen || isRightMenuOpen || isApiSettingsOpen) && (
           <motion.div 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            onClick={() => { setIsLeftMenuOpen(false); setIsRightMenuOpen(false); }}
+            onClick={() => { setIsLeftMenuOpen(false); setIsRightMenuOpen(false); setIsApiSettingsOpen(false); }}
             className="absolute inset-0 bg-black/50 backdrop-blur-sm z-40"
           />
+        )}
+      </AnimatePresence>
+
+      {/* API Key Modal */}
+      <AnimatePresence>
+        {isApiSettingsOpen && (
+          <div className="absolute inset-0 flex items-center justify-center z-50 p-6 pointer-events-none">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className={`w-full max-w-sm rounded-xl border p-6 shadow-2xl pointer-events-auto ${isLight ? 'bg-white border-[#E9ECEF]' : 'bg-[#1C1E22] border-[#2D3036]'}`}
+            >
+              <div className="flex items-center gap-3 mb-6">
+                <SettingsIcon className="h-5 w-5 text-elx-green" />
+                <h3 className="text-sm font-bold uppercase tracking-widest">API Configuration</h3>
+              </div>
+              
+              <p className="text-[11px] mb-4 text-gray-500 uppercase tracking-wider">Storage variable: [USER_CORE_KEY]</p>
+              
+              <div className="space-y-4">
+                <input
+                  type="password"
+                  value={tempApiKey}
+                  onChange={(e) => setTempApiKey(e.target.value)}
+                  placeholder="Paste your API Key here..."
+                  className={`w-full p-4 rounded text-xs font-mono border focus:ring-0 transition-all ${isLight ? 'bg-[#F1F3F5] border-[#E9ECEF] focus:border-elx-green/50 text-black' : 'bg-[#151619] border-[#2D3036] focus:border-elx-green/40 text-white'}`}
+                />
+                
+                <div className="flex gap-2">
+                  <button 
+                    onClick={() => setIsApiSettingsOpen(false)}
+                    className={`flex-1 p-3 rounded text-[10px] font-bold uppercase tracking-widest border transition-all ${isLight ? 'border-[#E9ECEF] text-gray-500 hover:bg-[#F1F3F5]' : 'border-[#2D3036] text-gray-500 hover:text-white'}`}
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    onClick={handleUpdateApiKey}
+                    className="flex-1 p-3 rounded text-[10px] font-bold uppercase tracking-widest bg-elx-green text-hardware-bg hover:opacity-90 transition-all shadow-[0_0_10px_rgba(57,255,20,0.3)]"
+                  >
+                    Set Key
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
 
@@ -253,9 +339,9 @@ export default function App() {
               </div>
             )}
 
-            {messages.map((msg, idx) => (
+            {messages.map((msg) => (
               <motion.div 
-                key={idx}
+                key={msg.id}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
@@ -297,7 +383,7 @@ export default function App() {
                         className={`text-gray-500 hover:text-elx-green transition-colors`}
                         title="Copy"
                       >
-                        <Copy className="h-4 w-4" />
+                        <ClipboardCopy className="h-4 w-4" />
                       </button>
                       <button 
                         onClick={() => speakText(msg.parts[0].text || '')}
@@ -379,7 +465,7 @@ export default function App() {
                   <Zap className="h-7 w-7" />
                 </button>
               </div>
-              <p className="text-[9px] font-mono text-gray-500 text-center uppercase tracking-widest opacity-60">Android Core Precision • v3.0</p>
+              <p className="text-[9px] font-mono text-gray-500 text-center uppercase tracking-widest opacity-60">Android Core Precision • [API_VAR] ACTIVE</p>
             </div>
           </div>
         </div>
