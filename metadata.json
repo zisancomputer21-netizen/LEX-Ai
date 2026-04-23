@@ -1,0 +1,8 @@
+{
+  "name": "ELX ",
+  "description": "Technical AI companion for the ELX Electronics Experiment ecosystem, offering circuit analysis and developer tools.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": []
+}
