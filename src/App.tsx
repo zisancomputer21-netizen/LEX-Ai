@@ -429,7 +429,7 @@ export default function App() {
               <div className="space-y-1">
                 {chats.map((chat) => (
                   <div 
-                    key={chat.id}
+                    key={`chat-${chat.id}`}
                     className="group relative"
                   >
                     <button 
@@ -650,7 +650,7 @@ export default function App() {
 
             {messages.map((msg, mIdx) => (
               <motion.div 
-                key={msg.id || `msg-${mIdx}`}
+                key={msg.id ? `msg-${msg.id}` : `m-${mIdx}`}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}

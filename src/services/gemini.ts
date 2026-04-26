@@ -50,11 +50,6 @@ export class GeminiService {
       throw new Error("Please enter your API Key in the ELX Settings to activate my core.");
     }
 
-    const model = this.ai.getGenerativeModel({ 
-      model: "gemini-1.5-flash",
-      systemInstruction: SYSTEM_INSTRUCTION 
-    });
-
     const contents: any[] = history.map(m => ({
       role: m.role,
       parts: m.parts.map(p => {
@@ -70,10 +65,17 @@ export class GeminiService {
     }
     contents.push({ role: "user", parts: userParts });
 
-    const result = await model.generateContent({ contents });
-    const response = await result.response;
-    const text = response.text();
-    
+    const result = await (this.ai as any).models.generateContent({
+      model: "gemini-1.5-flash",
+      contents,
+      config: {
+        systemInstruction: SYSTEM_INSTRUCTION,
+        temperature: 0.7,
+      },
+    });
+
+    // Handle extraction of text from common SDK variations
+    const text = result.text || (result.response && typeof result.response.text === 'function' ? result.response.text() : '');
     return text || "";
   }
 }
