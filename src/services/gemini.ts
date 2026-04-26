@@ -66,7 +66,7 @@ export class GeminiService {
     contents.push({ role: "user", parts: userParts });
 
     const result = await (this.ai as any).models.generateContent({
-      model: "gemini-1.5-flash",
+      model: "models/gemini-1.5-flash",
       contents,
       config: {
         systemInstruction: SYSTEM_INSTRUCTION,

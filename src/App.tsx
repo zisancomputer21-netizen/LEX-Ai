@@ -107,7 +107,10 @@ export default function App() {
           return { ...data, id: doc.id };
         })
         .filter(chat => !chat.deleted);
-      setChats(chatList);
+      
+      // Deduplicate chats by ID
+      const uniqueChats = Array.from(new Map(chatList.map(c => [c.id, c])).values()) as any[];
+      setChats(uniqueChats);
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, `users/${user?.uid}/chats`);
     });
@@ -133,7 +136,10 @@ export default function App() {
           id: doc.id
         };
       }) as Message[];
-      setMessages(msgs);
+      
+      // Deduplicate messages by ID to prevent key conflicts
+      const uniqueMsgs = Array.from(new Map(msgs.map(m => [m.id, m])).values());
+      setMessages(uniqueMsgs);
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, `users/${user?.uid}/chats/${currentChatId}/messages`);
     });
@@ -275,7 +281,8 @@ export default function App() {
       // Save user message to Firestore
       if (user && chatId) {
         const messagesRef = collection(db, 'users', user.uid, 'chats', chatId, 'messages');
-        await addDoc(messagesRef, {
+        const msgDocRef = doc(messagesRef, userMessage.id);
+        await setDoc(msgDocRef, {
           ...userMessage,
           createdAt: serverTimestamp()
         });
@@ -296,7 +303,8 @@ export default function App() {
       // Save model response to Firestore
       if (user && chatId) {
         const messagesRef = collection(db, 'users', user.uid, 'chats', chatId, 'messages');
-        await addDoc(messagesRef, {
+        const msgDocRef = doc(messagesRef, modelMessage.id);
+        await setDoc(msgDocRef, {
           ...modelMessage,
           createdAt: serverTimestamp()
         });
