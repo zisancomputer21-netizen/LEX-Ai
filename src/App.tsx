@@ -9,7 +9,7 @@ import {
   MoreVertical,
   MoreHorizontal,
   LogOut,
-  User,
+  User as UserIcon,
   ClipboardCopy,
   Sun,
   Moon,
@@ -19,9 +19,29 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { geminiService, Message } from './services/gemini.ts';
+import { auth, db, signInWithGoogle } from './lib/firebase';
+import { onAuthStateChanged, signOut, User } from 'firebase/auth';
+import { 
+  doc, 
+  setDoc, 
+  getDoc, 
+  collection, 
+  addDoc, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  serverTimestamp,
+  Timestamp
+} from 'firebase/firestore';
+import { handleFirestoreError, OperationType } from './lib/utils';
 
 export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [chats, setChats] = useState<{ id: string; title: string; createdAt: any }[]>([]);
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -31,20 +51,145 @@ export default function App() {
   const [isApiSettingsOpen, setIsApiSettingsOpen] = useState(false);
   const [tempApiKey, setTempApiKey] = useState('');
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [hasApiKey, setHasApiKey] = useState(geminiService.hasKey());
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [hasApiKey, setHasApiKey] = useState(geminiService.hasKey());
+  useEffect(() => {
+    // Pre-load voices for TTS
+    const loadVoices = () => {
+      window.speechSynthesis.getVoices();
+    };
+    loadVoices();
+    if (window.speechSynthesis.onvoiceschanged !== undefined) {
+      window.speechSynthesis.onvoiceschanged = loadVoices;
+    }
+  }, []);
 
-  const handleUpdateApiKey = () => {
+  // Auth & API Key Sync
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      if (currentUser) {
+        const userDocRef = doc(db, 'users', currentUser.uid);
+        try {
+          const userDoc = await getDoc(userDocRef);
+          if (userDoc.exists()) {
+            const data = userDoc.data();
+            if (data.geminiApiKey) {
+              geminiService.updateApiKey(data.geminiApiKey);
+              setHasApiKey(true);
+            }
+          }
+        } catch (error) {
+          console.error("Error fetching user data:", error);
+        }
+      } else {
+        setHasApiKey(false);
+        setMessages([]);
+        setChats([]);
+        setCurrentChatId(null);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Fetch Chat History
+  useEffect(() => {
+    if (!user) return;
+    const chatsRef = collection(db, 'users', user.uid, 'chats');
+    const q = query(chatsRef, orderBy('createdAt', 'desc'));
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const chatList = snapshot.docs
+        .map(doc => {
+          const data = doc.data();
+          return { ...data, id: doc.id };
+        })
+        .filter(chat => !chat.deleted);
+      setChats(chatList);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, `users/${user?.uid}/chats`);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Sync Messages for Active Chat
+  useEffect(() => {
+    if (!user || !currentChatId) {
+      if (!currentChatId) setMessages([]);
+      return;
+    }
+    
+    const messagesRef = collection(db, 'users', user.uid, 'chats', currentChatId, 'messages');
+    const q = query(messagesRef, orderBy('createdAt', 'asc'));
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const msgs = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          ...data,
+          id: doc.id
+        };
+      }) as Message[];
+      setMessages(msgs);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, `users/${user?.uid}/chats/${currentChatId}/messages`);
+    });
+
+    return () => unsubscribe();
+  }, [user, currentChatId]);
+
+  const createNewChat = async () => {
+    if (!user) {
+      setMessages([]);
+      setCurrentChatId(null);
+      setIsLeftMenuOpen(false);
+      return;
+    }
+
+    try {
+      const chatsRef = collection(db, 'users', user.uid, 'chats');
+      const newChatDoc = await addDoc(chatsRef, {
+        title: 'New Session',
+        createdAt: serverTimestamp()
+      });
+      setCurrentChatId(newChatDoc.id);
+      setIsLeftMenuOpen(false);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `users/${user.uid}/chats`);
+    }
+  };
+
+  const loadChat = (chatId: string) => {
+    setCurrentChatId(chatId);
+    setIsLeftMenuOpen(false);
+  };
+
+  const handleUpdateApiKey = async () => {
     if (tempApiKey.trim()) {
-      geminiService.updateApiKey(tempApiKey.trim());
+      const newKey = tempApiKey.trim();
+      geminiService.updateApiKey(newKey);
       setHasApiKey(true);
       setIsApiSettingsOpen(false);
+
+      if (user) {
+        const userDocRef = doc(db, 'users', user.uid);
+        try {
+          await setDoc(userDocRef, {
+            geminiApiKey: newKey,
+            updatedAt: serverTimestamp()
+          }, { merge: true });
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
+        }
+      }
+
       setMessages(prev => [...prev, { 
         id: crypto.randomUUID(),
         role: 'model', 
-        parts: [{ text: "ELX CORE ACTIVATED. CONNECTION REFRESHED. READY FOR TECHNICAL QUERIES." }] 
+        parts: [{ text: "ELX CORE ACTIVATED. Your personal AI companion is ready for any query." }] 
       }]);
     }
   };
@@ -90,6 +235,23 @@ export default function App() {
       ]
     };
 
+    let chatId = currentChatId;
+    
+    // Auto-create chat if guest/first message
+    if (user && !chatId) {
+      try {
+        const chatsRef = collection(db, 'users', user.uid, 'chats');
+        const newChatDoc = await addDoc(chatsRef, {
+          title: currentInput.substring(0, 30) || 'New Session',
+          createdAt: serverTimestamp()
+        });
+        chatId = newChatDoc.id;
+        setCurrentChatId(newChatDoc.id);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, `users/${user.uid}/chats`);
+      }
+    }
+
     try {
       if (!hasApiKey) {
         const inactiveMessage: Message = {
@@ -104,10 +266,20 @@ export default function App() {
         return;
       }
 
+      // Optimistic update for UI feel
       setMessages(prev => [...prev, userMessage]);
       setInputText('');
       setSelectedImage(null);
       setIsTyping(true);
+
+      // Save user message to Firestore
+      if (user && chatId) {
+        const messagesRef = collection(db, 'users', user.uid, 'chats', chatId, 'messages');
+        await addDoc(messagesRef, {
+          ...userMessage,
+          createdAt: serverTimestamp()
+        });
+      }
       
       const response = await geminiService.chat(
         messages, 
@@ -120,7 +292,20 @@ export default function App() {
         role: 'model',
         parts: [{ text: response }]
       };
-      setMessages(prev => [...prev, modelMessage]);
+      
+      // Save model response to Firestore
+      if (user && chatId) {
+        const messagesRef = collection(db, 'users', user.uid, 'chats', chatId, 'messages');
+        await addDoc(messagesRef, {
+          ...modelMessage,
+          createdAt: serverTimestamp()
+        });
+      } else {
+        setMessages(prev => [...prev, modelMessage]);
+      }
+      
+      // Auto-speak response AFTER everything is processed
+      speakText(response);
     } catch (error) {
       console.error('ELX Error:', error);
       const errorMessage: Message = {
@@ -138,17 +323,59 @@ export default function App() {
     navigator.clipboard.writeText(text);
   };
 
-  const speakText = (text: string) => {
-    // Aggressive cleanup of markdown for TTS
-    const cleanText = text.replace(/\[COPY\]|\[SPEECH\]|#|\*|_|`|\[|\]/g, '').trim();
+  const speakText = (content: string) => {
+    // 1. Force stop any ongoing speech
+    window.speechSynthesis.cancel();
+
+    if (!content) return;
+
+    // 2. Clean Markdown and symbols for natural speech
+    const cleanText = content
+      .replace(/[#*`_]/g, '')             // Remove basic Markdown
+      .replace(/!\[.*?\]\(.*?\)/g, '')    // Remove Images
+      .replace(/\[.*?\]\(.*?\)/g, '$1')   // Remove links (keep text)
+      .replace(/\n+/g, ' ')               // Smooth breathing spaces
+      .trim();
+
+    if (!cleanText || cleanText.length < 2) return;
+
+    // 3. Setup Utterance
     const utterance = new SpeechSynthesisUtterance(cleanText);
-    utterance.rate = 1;
-    utterance.pitch = 1;
-    window.speechSynthesis.speak(utterance);
+    
+    // Detect Bengali Unicode range
+    const hasBengali = /[\u0980-\u09FF]/.test(cleanText);
+
+    if (hasBengali) {
+      utterance.lang = 'bn-BD';
+      utterance.rate = 0.8; // User requested 0.8 for Bengali
+      utterance.pitch = 1.0;
+      
+      // Try to find a Bengali voice
+      const voices = window.speechSynthesis.getVoices();
+      const bnVoice = voices.find(v => v.lang.includes('bn-BD')) || 
+                      voices.find(v => v.lang.includes('bn-IN')) ||
+                      voices.find(v => v.name.toLowerCase().includes('bengali'));
+      if (bnVoice) utterance.voice = bnVoice;
+    } else {
+      utterance.lang = 'en-US';
+      utterance.rate = 1.0;
+      utterance.pitch = 1.0;
+    }
+
+    // 4. Trigger Speech after a tiny delay
+    setTimeout(() => {
+      window.speechSynthesis.speak(utterance);
+    }, 50);
   };
 
   const toggleTheme = () => {
     setTheme(prev => prev === 'dark' ? 'light' : 'dark');
+  };
+
+  const bulkCopy = () => {
+    const allText = messages.map(m => `${m.role === 'user' ? 'YOU' : 'ELX'}: ${m.parts[0]?.text || ''}`).join('\n\n');
+    copyToClipboard(allText);
+    setIsRightMenuOpen(false);
   };
 
   const isLight = theme === 'light';
@@ -165,27 +392,105 @@ export default function App() {
             transition={{ type: 'spring', damping: 25, stiffness: 200 }}
             className={`absolute inset-y-0 left-0 w-72 z-50 p-6 flex flex-col border-r ${isLight ? 'bg-white border-[#E9ECEF]' : 'bg-[#1C1E22] border-[#2D3036]'}`}
           >
-            <div className={`flex items-center gap-3 p-3 rounded-lg border mb-8 ${isLight ? 'bg-[#F1F3F5] border-[#E9ECEF]' : 'bg-[#151619] border-[#2D3036]'}`}>
-              <div className="h-10 w-10 rounded-full bg-elx-green/20 flex items-center justify-center border border-elx-green/40 font-bold text-elx-green">
-                ZI
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className={`text-sm font-bold truncate ${isLight ? 'text-black' : 'text-white'}`}>zisancomputer2.1</p>
-                <p className="text-[10px] text-gray-500 uppercase tracking-widest leading-none">Google Secured</p>
-              </div>
+            <div className={`flex items-center gap-3 p-3 rounded-lg border mb-6 ${isLight ? 'bg-[#F1F3F5] border-[#E9ECEF]' : 'bg-[#151619] border-[#2D3036]'}`}>
+              {user ? (
+                <>
+                  <div className="h-10 w-10 rounded-full bg-elx-green/20 flex items-center justify-center border border-elx-green/40 font-bold text-elx-green overflow-hidden">
+                    {user.photoURL ? <img src={user.photoURL} alt="User" /> : user.displayName?.charAt(0) || 'U'}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-sm font-bold truncate ${isLight ? 'text-black' : 'text-white'}`}>{user.displayName || user.email}</p>
+                    <p className="text-[10px] text-gray-500 uppercase tracking-widest leading-none">ELX AUTHENTICATED</p>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="h-10 w-10 rounded-full bg-gray-500/20 flex items-center justify-center border border-gray-500/40">
+                    <UserIcon className="h-5 w-5 text-gray-500" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-sm font-bold truncate ${isLight ? 'text-black' : 'text-white'}`}>Guest Mode</p>
+                    <p className="text-[10px] text-gray-500 uppercase tracking-widest leading-none">Login Required</p>
+                  </div>
+                </>
+              )}
             </div>
+
+            <button 
+              onClick={createNewChat}
+              className="w-full flex items-center justify-center gap-2 p-3 rounded-lg bg-elx-green/10 border border-elx-green/30 text-elx-green text-xs font-bold uppercase tracking-widest hover:bg-elx-green/20 transition-all mb-8"
+            >
+              <Plus className="h-4 w-4" /> New Chat Session
+            </button>
             
-            <div className="space-y-4">
-              <h2 className="text-[10px] uppercase tracking-widest text-gray-500 font-bold px-2">Account & Identity</h2>
-              <button className={`w-full flex items-center gap-3 p-2 rounded transition-all text-sm font-medium ${isLight ? 'hover:bg-[#E9ECEF] text-gray-700' : 'hover:bg-[#2D3036] text-gray-400 hover:text-white'}`}>
-                <LogOut className="h-4 w-4" /> Google Logout
-              </button>
+            <div className="flex-1 overflow-y-auto space-y-4 mb-4 scrollbar-none">
+              <h2 className="text-[10px] uppercase tracking-widest text-gray-500 font-bold px-2">History View</h2>
               
-              <div className="h-px bg-gray-200 mt-2 mb-2 opacity-20" />
-              
-              <button className={`w-full flex items-center gap-3 p-2 rounded transition-all text-sm font-medium ${isLight ? 'hover:bg-[#E9ECEF] text-gray-700' : 'hover:bg-[#2D3036] text-gray-400 hover:text-white'}`}>
-                <Clock className="h-4 w-4 text-elx-green" /> History View
-              </button>
+              <div className="space-y-1">
+                {chats.map((chat) => (
+                  <div 
+                    key={chat.id}
+                    className="group relative"
+                  >
+                    <button 
+                      onClick={() => loadChat(chat.id)}
+                      className={`w-full flex items-center gap-3 p-3 rounded-lg transition-all text-xs text-left ${
+                        currentChatId === chat.id 
+                          ? (isLight ? 'bg-elx-green/10 text-elx-green border border-elx-green/20' : 'bg-elx-green/10 text-white border border-elx-green/30') 
+                          : (isLight ? 'hover:bg-[#F1F3F5] text-gray-600' : 'hover:bg-[#2D3036] text-gray-400')
+                      }`}
+                    >
+                      <Clock className="h-3 w-3 flex-shrink-0" />
+                      <span className="flex-1 truncate pr-6">{chat.title}</span>
+                    </button>
+                    <button 
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        if (user && confirm('Delete this session?')) {
+                          try {
+                            const chatDocRef = doc(db, 'users', user.uid, 'chats', chat.id);
+                            await setDoc(chatDocRef, { deleted: true }, { merge: true });
+                            if (currentChatId === chat.id) {
+                              setCurrentChatId(null);
+                              setMessages([]);
+                            }
+                          } catch (error) {
+                            handleFirestoreError(error, OperationType.DELETE, `users/${user.uid}/chats/${chat.id}`);
+                          }
+                        }
+                      }}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1 opacity-0 group-hover:opacity-100 transition-opacity text-gray-500 hover:text-red-500"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+                {user && chats.length === 0 && (
+                  <p className="text-[10px] text-center text-gray-500 mt-4 italic">No sessions found</p>
+                )}
+                {!user && (
+                  <p className="text-[10px] text-center text-gray-500 mt-4 italic">Log in to sync history</p>
+                )}
+              </div>
+
+              <div className="h-px bg-gray-200 opacity-20 my-4" />
+
+              <h2 className="text-[10px] uppercase tracking-widest text-gray-500 font-bold px-2">Identity</h2>
+              {user ? (
+                <button 
+                  onClick={() => signOut(auth)}
+                  className={`w-full flex items-center gap-3 p-3 rounded-lg transition-all text-xs font-medium ${isLight ? 'hover:bg-[#F1F3F5] text-gray-700' : 'hover:bg-[#2D3036] text-gray-400 hover:text-white'}`}
+                >
+                  <LogOut className="h-4 w-4" /> Logout from Cloud
+                </button>
+              ) : (
+                <button 
+                  onClick={signInWithGoogle}
+                  className={`w-full flex items-center gap-3 p-3 rounded-lg transition-all text-xs font-medium ${isLight ? 'hover:bg-[#F1F3F5] text-gray-700' : 'hover:bg-[#2D3036] text-gray-400 hover:text-white'}`}
+                >
+                  <UserIcon className="h-4 w-4" /> Google Secure Login
+                </button>
+              )}
             </div>
             
             <button 
@@ -207,7 +512,10 @@ export default function App() {
           >
             <h2 className="text-[10px] font-mono uppercase tracking-[0.2em] text-gray-500 mb-6 px-1 font-bold">Session Controls</h2>
             <div className="space-y-3">
-              <button className={`w-full flex items-center gap-3 p-2 rounded transition-all text-sm font-medium ${isLight ? 'hover:bg-[#E9ECEF] text-gray-700' : 'hover:bg-[#2D3036] text-gray-400 hover:text-white'}`}>
+              <button 
+                onClick={bulkCopy}
+                className={`w-full flex items-center gap-3 p-2 rounded transition-all text-sm font-medium ${isLight ? 'hover:bg-[#E9ECEF] text-gray-700' : 'hover:bg-[#2D3036] text-gray-400 hover:text-white'}`}
+              >
                 <ClipboardCopy className="h-4 w-4" /> [📋] Bulk Copy Content
               </button>
               <button className={`w-full flex items-center gap-3 p-2 rounded transition-all text-sm font-medium ${isLight ? 'hover:bg-[#E9ECEF] text-gray-700' : 'hover:bg-[#2D3036] text-gray-400 hover:text-white'}`}>
@@ -307,9 +615,10 @@ export default function App() {
       <header className={`flex h-16 items-center justify-between border-b px-4 z-10 transition-colors ${isLight ? 'bg-white border-[#E9ECEF]' : 'bg-[#1C1E22] border-[#2D3036]'}`}>
         <button 
           onClick={() => setIsLeftMenuOpen(true)}
-          className={`p-2 rounded transition-all ${isLight ? 'text-gray-400 hover:bg-gray-100' : 'text-elx-green hover:bg-elx-green/10'}`}
+          className={`p-2 rounded transition-all flex items-center gap-2 ${isLight ? 'text-gray-400 hover:bg-gray-100' : 'text-elx-green hover:bg-elx-green/10'}`}
+          title="Chat History"
         >
-          <MoreHorizontal className="h-6 w-6" />
+          <Clock className="h-6 w-6" />
         </button>
 
         <div className="flex flex-col items-center flex-1">
@@ -339,9 +648,9 @@ export default function App() {
               </div>
             )}
 
-            {messages.map((msg) => (
+            {messages.map((msg, mIdx) => (
               <motion.div 
-                key={msg.id}
+                key={msg.id || `msg-${mIdx}`}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
@@ -351,7 +660,7 @@ export default function App() {
                     ? 'p-2' 
                     : 'space-y-1'
                 }`}>
-                  <div className={`text-sm ${
+                      <div className={`text-sm ${
                     msg.role === 'model' 
                       ? `${isLight ? 'bg-white border-[#E9ECEF]' : 'bg-[#1C1E22] border-[#2D3036]'} p-4 rounded-xl border` 
                       : `${isLight ? 'bg-white border-elx-green/40 shadow-sm' : 'bg-elx-green/10 border-elx-green/30'} p-3 rounded-xl border`
@@ -359,8 +668,10 @@ export default function App() {
                     {msg.parts.map((part, pIdx) => (
                       <React.Fragment key={pIdx}>
                         {part.text && (
-                          <div className={`font-sans whitespace-pre-wrap leading-relaxed ${isLight && msg.role === 'model' ? 'text-[#343A40]' : ''}`}>
-                            {part.text}
+                          <div className={`markdown-body font-sans leading-relaxed ${isLight && msg.role === 'model' ? 'text-[#343A40]' : ''}`}>
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {part.text}
+                            </ReactMarkdown>
                           </div>
                         )}
                         {part.inlineData && (
@@ -449,7 +760,7 @@ export default function App() {
                       handleSend();
                     }
                   }}
-                  placeholder="Enter technical query or command..."
+                  placeholder="Ask ELX anything..."
                   className={`flex-1 bg-transparent border-none focus:ring-0 py-4 px-2 text-sm resize-none scrollbar-none min-h-[56px] max-h-32 ${isLight ? 'text-[#343A40]' : 'text-white'}`}
                 />
 
